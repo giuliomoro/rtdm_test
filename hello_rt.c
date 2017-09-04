@@ -20,12 +20,18 @@ MODULE_LICENSE("GPL");
 #define ADC_FIFO0_THRESHOLD 0xe8
 #define ADC_FIFO0_DATA 0x100
 
+#define NUM_SAMPLES 8
+
 struct hello_rt_context {
 	int* buf;
 	int size;
 	void* gpio1_addr;
 	void* adc_addr;
 	rtdm_irq_t irq_n;
+	unsigned int linux_irq;
+	rtdm_event_t event;
+	nanosecs_abs_t irq_start;
+	nanosecs_abs_t irq_stop;
 };
 
 static int irq_handler(rtdm_irq_t *irq_handle){
@@ -33,17 +39,27 @@ static int irq_handler(rtdm_irq_t *irq_handle){
 	struct hello_rt_context *ctx = ((struct hello_rt_context*)irq_handle->cookie);
 	int numSamples, i;
 
+	ctx->irq_start = rtdm_clock_read();
+
 	numSamples = ioread32(ctx->adc_addr + ADC_FIFO0_COUNT);
+	if (numSamples != NUM_SAMPLES){
+		rtdm_printk("wrong number of samples in FIFO\n");
+	}
 
 	// empty fifo into buffer
-	for (i=0; i<numSamples; i++){
+	for (i=0; i<NUM_SAMPLES; i++){
 		ctx->buf[i] = ioread32(ctx->adc_addr + ADC_FIFO0_DATA);
 	}
 	
 	// clear interrupt bit in adc registers to prevent irq refiring
 	irq_status = ioread32(ctx->adc_addr + ADC_IRQSTATUS);
 	iowrite32(irq_status, ctx->adc_addr + ADC_IRQSTATUS);
-	rtdm_printk("irq %i: %08x : %i : %i\n", *((int*)irq_handle), irq_status, numSamples, ctx->buf[2]);
+//	rtdm_printk("irq %i: %08x : %i : %i\n", *((int*)irq_handle), irq_status, numSamples, ctx->buf[2]);
+
+	rtdm_printk("event pulse\n");
+	rtdm_event_pulse(&ctx->event);
+
+	ctx->irq_stop = rtdm_clock_read();
 
 	return RTDM_IRQ_HANDLED;
 }
@@ -71,7 +87,7 @@ void init_adc(struct hello_rt_context *ctx){
 	iowrite32(0x1, ctx->adc_addr + ADC_STEPCONFIG1);	// set stepconfig to continuous
 	iowrite32(0xff000000, ctx->adc_addr + ADC_STEPDELAY1);	// set sampledelay to 255
 	iowrite32(0x4, ctx->adc_addr + ADC_IRQENABLE_SET);	// enable fifo0 threshold irq
-	iowrite32(0x4, ctx->adc_addr + ADC_FIFO0_THRESHOLD);	// set fifo0 threshold to 4 samples
+	iowrite32(0x7, ctx->adc_addr + ADC_FIFO0_THRESHOLD);	// set fifo0 threshold 
 
 	printk(KERN_ALERT "adc config: %08x\n", ioread32(ctx->adc_addr + ADC_STEPCONFIG1));
 	printk(KERN_ALERT "adc enable: %08x\n", ioread32(ctx->adc_addr + ADC_STEPENABLE));
@@ -102,11 +118,17 @@ void init_gpio(struct hello_rt_context *ctx){
 }
 
 void init_intc(struct hello_rt_context *ctx){
+	int res;
 	struct device_node *of_node = of_find_node_by_name(NULL, "interrupt-controller");
 	struct irq_domain *intc_domain = irq_find_matching_fwnode(&of_node->fwnode, DOMAIN_BUS_ANY); 
-	unsigned int irq = irq_create_mapping(intc_domain, 16);
-	int res = rtdm_irq_request(&ctx->irq_n, irq, irq_handler, 0, "hello_rt_irq", (void*)ctx);
-	printk("rtdm interrupt %i registered: %i\n", irq, res);
+	ctx->linux_irq = irq_create_mapping(intc_domain, 16);
+	if (!ctx->linux_irq){
+		printk(KERN_ALERT "bad linux irq\n");
+		return;
+	}
+	res = rtdm_irq_request(&ctx->irq_n, ctx->linux_irq, irq_handler, 0, "hello_rt_irq", (void*)ctx);
+	printk("rtdm interrupt %i registered: %i\n", ctx->linux_irq, res);
+	of_node_put(of_node);
 }
 
 static int hello_rt_open(struct rtdm_fd *fd, int oflags){
@@ -116,6 +138,8 @@ static int hello_rt_open(struct rtdm_fd *fd, int oflags){
 	// init_gpio(ctx);
 	init_adc(ctx);
 
+	rtdm_event_init(&ctx->event, 0);
+
 	ctx->buf = (int*)rtdm_malloc(4096);
 
 	return 0;
@@ -123,14 +147,18 @@ static int hello_rt_open(struct rtdm_fd *fd, int oflags){
 
 static void hello_rt_close(struct rtdm_fd *fd){
 	struct hello_rt_context *ctx = rtdm_fd_to_private(fd);
-	rtdm_free(ctx->buf);
+	iowrite32(0x4, ctx->adc_addr + ADC_IRQENABLE_CLR);	// disable fifo0 threshold irq
+	iowrite32(0x0, ctx->adc_addr + ADC_CTRL);		// disable ADC - neccesary!
 	rtdm_irq_free(&ctx->irq_n);
+	irq_dispose_mapping(ctx->linux_irq);
+	rtdm_free(ctx->buf);
+	rtdm_event_destroy(&ctx->event);
 	rtdm_printk("BYE\n");
 }
 
 static ssize_t hello_rt_write_nrt(struct rtdm_fd *fd, const void __user *buf, size_t size){
-	int res;
-	struct hello_rt_context *ctx = rtdm_fd_to_private(fd);
+//	int res;
+//	struct hello_rt_context *ctx = rtdm_fd_to_private(fd);
 	
 	// res = rtdm_copy_from_user(fd, ctx->buf, buf, size);
 	// ctx->size = size;
@@ -142,13 +170,21 @@ static ssize_t hello_rt_write_nrt(struct rtdm_fd *fd, const void __user *buf, si
 static ssize_t hello_rt_read_nrt(struct rtdm_fd *fd, void __user *buf, size_t size){
 	int ret, read_count;
 	struct hello_rt_context *ctx = rtdm_fd_to_private(fd);
-	// ret = rtdm_copy_to_user(fd, buf, ctx->buf, read_count);
-	int status = ioread32(ctx->adc_addr + ADC_STATUS);
+	/* int status = ioread32(ctx->adc_addr + ADC_STATUS);
 	int count = ioread32(ctx->adc_addr + ADC_FIFO0_COUNT);
 	int config = ioread32(ctx->adc_addr + ADC_STEPCONFIG1);
 	int delay = ioread32(ctx->adc_addr + ADC_STEPDELAY1);
 
 	rtdm_printk("status: %08x\ncount: %i\nconfig: %08x\ndelay: %08x\n", status, count, config, delay);
+	*/
+	
+	rtdm_event_wait(&ctx->event);
+
+	ctx->buf[NUM_SAMPLES] = ctx->irq_stop - ctx->irq_start;
+	ctx->buf[NUM_SAMPLES+1] = rtdm_clock_read() - ctx->irq_start;
+	ret = rtdm_copy_to_user(fd, buf, ctx->buf, (NUM_SAMPLES+2)*4);
+
+	// rtdm_printk("irq: %llu\n handler: %llu\n\n\n", ctx->irq_stop - ctx->irq_start, rtdm_clock_read() - ctx->irq_start);
 
 	return 0;
 }
@@ -180,10 +216,12 @@ static struct rtdm_device device = {
 };
 
 static int __init hello_rt_init(void){
+	printk(KERN_ALERT "hello_rt loaded\n");
 	return rtdm_dev_register(&device);
 }
 
 static void __exit hello_rt_exit(void){
+	printk(KERN_ALERT "hello_rt unloaded\n");
 	return rtdm_dev_unregister(&device);
 }
 
