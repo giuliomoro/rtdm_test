@@ -1,4 +1,5 @@
 #include <linux/module.h>
+#include <linux/moduleparam.h>
 #include <rtdm/driver.h>
 MODULE_LICENSE("GPL");
 
@@ -20,7 +21,11 @@ MODULE_LICENSE("GPL");
 #define ADC_FIFO0_THRESHOLD 0xe8
 #define ADC_FIFO0_DATA 0x100
 
-#define NUM_SAMPLES 8
+static int NUM_SAMPLES;
+module_param(NUM_SAMPLES, int, S_IRUGO|S_IWUSR);
+
+static int CLKDIV_VAL;
+module_param(CLKDIV_VAL, int, S_IRUGO|S_IWUSR);
 
 struct hello_rt_context {
 	int* buf;
@@ -37,26 +42,31 @@ struct hello_rt_context {
 static int irq_handler(rtdm_irq_t *irq_handle){
 	unsigned int irq_status;
 	struct hello_rt_context *ctx = ((struct hello_rt_context*)irq_handle->cookie);
-	int numSamples, i;
+	int numSamples, i, numS;
 
 	ctx->irq_start = rtdm_clock_read();
 
-	numSamples = ioread32(ctx->adc_addr + ADC_FIFO0_COUNT);
-	if (numSamples != NUM_SAMPLES){
-		rtdm_printk("wrong number of samples in FIFO\n");
-	}
+//	numSamples = ioread32(ctx->adc_addr + ADC_FIFO0_COUNT);
+//	if (numSamples != NUM_SAMPLES){
+//		rtdm_printk("number of samples in FIFO: %i\n", numSamples);
+//	}
 
 	// empty fifo into buffer
-	for (i=0; i<NUM_SAMPLES; i++){
-		ctx->buf[i] = ioread32(ctx->adc_addr + ADC_FIFO0_DATA);
-	}
+//	for (i=0; i<numSamples; i++){
+//		ctx->buf[i] = ioread32(ctx->adc_addr + ADC_FIFO0_DATA);
+//	}
+	memcpy_fromio(ctx->buf, ctx->adc_addr + ADC_FIFO0_DATA, NUM_SAMPLES*4);
 	
+//	numS = ioread32(ctx->adc_addr + ADC_FIFO0_COUNT);
+//	if (numS != 0){
+//		rtdm_printk("number of samples in after FIFO: %i\n", numS);
+//	}
+
 	// clear interrupt bit in adc registers to prevent irq refiring
 	irq_status = ioread32(ctx->adc_addr + ADC_IRQSTATUS);
 	iowrite32(irq_status, ctx->adc_addr + ADC_IRQSTATUS);
-//	rtdm_printk("irq %i: %08x : %i : %i\n", *((int*)irq_handle), irq_status, numSamples, ctx->buf[2]);
 
-	rtdm_printk("event pulse\n");
+//	rtdm_printk("event pulse\n");
 	rtdm_event_pulse(&ctx->event);
 
 	ctx->irq_stop = rtdm_clock_read();
@@ -82,12 +92,12 @@ void init_adc(struct hello_rt_context *ctx){
 	ctx->adc_addr = ioremap(ADC_BASE, ADC_SIZE);
 	printk(KERN_ALERT "adc rev: %08x\n", ioread32(ctx->adc_addr));
 	iowrite32(0x4, ctx->adc_addr + ADC_CTRL);		// remove stepconfig write protection
-	iowrite32(0xfff, ctx->adc_addr + ADC_CLKDIV); 		// set clockdivider to max
+	iowrite32(CLKDIV_VAL, ctx->adc_addr + ADC_CLKDIV); 		// set clockdivider to max
 	iowrite32(0x2, ctx->adc_addr + ADC_STEPENABLE);
 	iowrite32(0x1, ctx->adc_addr + ADC_STEPCONFIG1);	// set stepconfig to continuous
-	iowrite32(0xff000000, ctx->adc_addr + ADC_STEPDELAY1);	// set sampledelay to 255
+	iowrite32(0x35000000, ctx->adc_addr + ADC_STEPDELAY1);	// set sampledelay to 0
 	iowrite32(0x4, ctx->adc_addr + ADC_IRQENABLE_SET);	// enable fifo0 threshold irq
-	iowrite32(0x7, ctx->adc_addr + ADC_FIFO0_THRESHOLD);	// set fifo0 threshold 
+	iowrite32(NUM_SAMPLES-1, ctx->adc_addr + ADC_FIFO0_THRESHOLD);	// set fifo0 threshold 
 
 	printk(KERN_ALERT "adc config: %08x\n", ioread32(ctx->adc_addr + ADC_STEPCONFIG1));
 	printk(KERN_ALERT "adc enable: %08x\n", ioread32(ctx->adc_addr + ADC_STEPENABLE));
@@ -152,6 +162,7 @@ static void hello_rt_close(struct rtdm_fd *fd){
 	rtdm_irq_free(&ctx->irq_n);
 	irq_dispose_mapping(ctx->linux_irq);
 	rtdm_free(ctx->buf);
+	rtdm_event_pulse(&ctx->event);
 	rtdm_event_destroy(&ctx->event);
 	rtdm_printk("BYE\n");
 }
@@ -177,8 +188,9 @@ static ssize_t hello_rt_read_nrt(struct rtdm_fd *fd, void __user *buf, size_t si
 
 	rtdm_printk("status: %08x\ncount: %i\nconfig: %08x\ndelay: %08x\n", status, count, config, delay);
 	*/
-	
+
 	rtdm_event_wait(&ctx->event);
+	
 
 	ctx->buf[NUM_SAMPLES] = ctx->irq_stop - ctx->irq_start;
 	ctx->buf[NUM_SAMPLES+1] = rtdm_clock_read() - ctx->irq_start;
