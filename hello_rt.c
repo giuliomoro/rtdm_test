@@ -1,11 +1,31 @@
 #include <linux/module.h>
+#include <linux/dma-mapping.h>
 #include <linux/moduleparam.h>
 #include <rtdm/driver.h>
+#include <linux/platform_device.h>
 MODULE_LICENSE("GPL");
 
 #define CM_PER 0x44e00000
 #define CM_PER_SIZE 0x3fff
 #define CM_WKUP_ADC 0x4bc
+
+#define EDMA_BASE 0x49000000
+#define EDMA_SIZE 0xfffff
+#define EDMA_EERH 0x1024
+#define EDMA_EESRH 0x1034
+#define EDMA_IESR 0x1060
+
+#define PARAM_BASE EDMA_BASE+0x4000
+#define PARAM_SIZE 0x1f
+#define PARAM_OPT 0x0
+#define PARAM_SRC 0x4
+#define PARAM_CNT 0x8
+#define PARAM_DST 0xc
+#define PARAM_BIDX 0x10
+#define PARAM_LINK 0x14
+#define PARAM_CIDX 0x18
+#define PARAM_CCNT 0x1c
+
 #define ADC_BASE 0x44e0d000
 #define ADC_SIZE 0x1fff
 #define ADC_IRQSTATUS 0x28
@@ -20,6 +40,7 @@ MODULE_LICENSE("GPL");
 #define ADC_FIFO0_COUNT 0xe4
 #define ADC_FIFO0_THRESHOLD 0xe8
 #define ADC_FIFO0_DATA 0x100
+#define ADC_DMA_PORT 0x54c00000
 
 static int NUM_SAMPLES;
 module_param(NUM_SAMPLES, int, S_IRUGO|S_IWUSR);
@@ -27,16 +48,28 @@ module_param(NUM_SAMPLES, int, S_IRUGO|S_IWUSR);
 static int CLKDIV_VAL;
 module_param(CLKDIV_VAL, int, S_IRUGO|S_IWUSR);
 
+static struct platform_device hello_plat_device = {
+	.name = "hello_rt",
+};
+
+dma_addr_t dma_handle;
+void* dma_buffer_k;
+
 struct hello_rt_context {
 	int* buf;
 	int size;
 	void* gpio1_addr;
 	void* adc_addr;
+	void* edma_addr;
+	void* param_addr;;
 	rtdm_irq_t irq_n;
 	unsigned int linux_irq;
 	rtdm_event_t event;
 	nanosecs_abs_t irq_start;
 	nanosecs_abs_t irq_stop;
+	struct device *dev;
+	void *dma_buffer_k;
+	dma_addr_t dma_handle;
 };
 
 static int irq_handler(rtdm_irq_t *irq_handle){
@@ -81,7 +114,7 @@ void init_adc(struct hello_rt_context *ctx){
 	// turn on the adc interface clock
 	cm_per_addr = ioremap(CM_PER, CM_PER_SIZE);
 	adc_clk = ioread32(cm_per_addr + CM_WKUP_ADC);
-	printk(KERN_ALERT "adc_clk: %08x\n", adc_clk);
+//	printk(KERN_ALERT "adc_clk: %08x\n", adc_clk);
 	if (adc_clk != 0x2){
 		iowrite32(0x2, cm_per_addr + CM_WKUP_ADC);
 		printk(KERN_ALERT "turned on adc ocp clock\n");
@@ -99,8 +132,8 @@ void init_adc(struct hello_rt_context *ctx){
 	iowrite32(0x4, ctx->adc_addr + ADC_IRQENABLE_SET);	// enable fifo0 threshold irq
 	iowrite32(NUM_SAMPLES-1, ctx->adc_addr + ADC_FIFO0_THRESHOLD);	// set fifo0 threshold 
 
-	printk(KERN_ALERT "adc config: %08x\n", ioread32(ctx->adc_addr + ADC_STEPCONFIG1));
-	printk(KERN_ALERT "adc enable: %08x\n", ioread32(ctx->adc_addr + ADC_STEPENABLE));
+//	printk(KERN_ALERT "adc config: %08x\n", ioread32(ctx->adc_addr + ADC_STEPCONFIG1));
+//	printk(KERN_ALERT "adc enable: %08x\n", ioread32(ctx->adc_addr + ADC_STEPENABLE));
 
 	iowrite32(0x1, ctx->adc_addr + ADC_CTRL);
 
@@ -141,10 +174,56 @@ void init_intc(struct hello_rt_context *ctx){
 	of_node_put(of_node);
 }
 
+void init_dma(struct hello_rt_context *ctx){
+	int ret;
+
+	ctx->edma_addr = ioremap(EDMA_BASE, EDMA_SIZE);
+	ctx->param_addr = ioremap(PARAM_BASE, PARAM_SIZE);
+	printk(KERN_ALERT "edma rev: %08x\n", ioread32(ctx->edma_addr));
+
+//	ret = dma_set_coherent_mask(ctx->dev, DMA_BIT_MASK(32));
+//	printk(KERN_WARNING "ret: %i\n", DMA_BIT_MASK(32));
+	ctx->dma_buffer_k = dma_buffer_k;
+	ctx->dma_handle = dma_handle;
+
+	// set edma channel 53 (adc fifo 0) to use param 0
+	iowrite32(0x0, ctx->edma_addr + 0x1d4);	
+	// enable event 53
+	iowrite32((1 << (53-33)), ctx->edma_addr + EDMA_EESRH);	
+
+	// PARAM
+	
+	// enable transfer-complete interrupt tcc=7
+	iowrite32((1 << 20)&(0x7 << 12), ctx->param_addr + PARAM_OPT);	
+	// set the source address to ADC_FIFO0
+	iowrite32(ADC_BASE + ADC_FIFO0_DATA, ctx->param_addr + PARAM_SRC);
+	// set ACNT to NUM_SAMPLES (number of samples in FIFO0) and BCNT to 1 (we are taking a one-dimensional array)
+	iowrite32((NUM_SAMPLES << 16)&(1), ctx->param_addr + PARAM_CNT);
+	// set the destination address to our DMA buffer
+	iowrite32(ctx->dma_handle, ctx->param_addr + PARAM_DST);
+	// set address offsets to 0
+	iowrite32(0, ctx->param_addr + PARAM_BIDX);
+	// set the link address to null (0xffff) to bcntrld to 1
+	iowrite32((0xffff << 16)&(0x1), ctx->param_addr + PARAM_LINK);
+	// set address offsets to 0
+	iowrite32(0, ctx->param_addr + PARAM_CIDX);
+	// set ccount to 1
+	iowrite32((1 << 16), ctx->param_addr + PARAM_CCNT);
+
+	// enable transfer-complete interrupt for tcc=7
+	iowrite32(0x7, ctx->edma_addr + EDMA_IESR);
+
+}
+
 static int hello_rt_open(struct rtdm_fd *fd, int oflags){
 	struct hello_rt_context *ctx = rtdm_fd_to_private(fd);
 
+	ctx->dev = &hello_plat_device.dev;
+//	ctx->dev->coherent_dma_mask = DMA_BIT_MASK(32);
+//	ctx->dev->dma_mask = &ctx->dev->coherent_dma_mask;
+
 	init_intc(ctx);
+	init_dma(ctx);
 	// init_gpio(ctx);
 	init_adc(ctx);
 
@@ -221,18 +300,41 @@ static struct rtdm_driver hello_rt_driver = {
 	},
 };
 
-
 static struct rtdm_device device = {
 	.driver = &hello_rt_driver,
 	.label = "rtdm_hello_%d",
 };
 
+int hello_rt_probe(struct platform_device* pdev){
+	return 0;
+}
+
+int hello_rt_remove(struct platform_device* pdev){
+	printk(KERN_ALERT "remove\n");
+	return 0;
+}
+
+static struct platform_driver hello_plat_driver = {
+	.driver		= {
+		.name	= "hello_rt",
+		.owner	= THIS_MODULE,
+	},
+	.probe		= hello_rt_probe,
+	.remove		= hello_rt_remove,
+};
+
 static int __init hello_rt_init(void){
-	printk(KERN_ALERT "hello_rt loaded\n");
+	platform_device_register(&hello_plat_device);
+	platform_driver_register(&hello_plat_driver);
+	dma_buffer_k = dma_alloc_coherent(NULL, 4096, &dma_handle, GFP_KERNEL);
+	printk(KERN_ALERT "hello_rt loaded %p %p\n", dma_buffer_k, (void*)dma_handle);
 	return rtdm_dev_register(&device);
 }
 
 static void __exit hello_rt_exit(void){
+	platform_driver_unregister(&hello_plat_driver);
+	platform_device_del(&hello_plat_device);
+	dma_free_coherent(NULL, 4096, dma_buffer_k, dma_handle);
 	printk(KERN_ALERT "hello_rt unloaded\n");
 	return rtdm_dev_unregister(&device);
 }

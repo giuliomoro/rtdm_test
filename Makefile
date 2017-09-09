@@ -10,6 +10,6 @@ else
 	PWD  := $(shell pwd)
 
 default:
-	$(MAKE) -C $(KERNELDIR) M=$(PWD) CROSS_COMPILE="/Volumes/standalone-env/bela_os/openadk/toolchain_beaglebone-black_glibc_cortex_a8_hard_eabihf/usr/bin/arm-openadk-linux-gnueabihf-" ARCH=arm modules
+	make -C $(KERNELDIR) M=$(PWD) CROSS_COMPILE="/Volumes/standalone-env/bela_os/openadk/toolchain_beaglebone-black_glibc_cortex_a8_hard_eabihf/usr/bin/arm-openadk-linux-gnueabihf-" ARCH=arm modules CFLAGS="-Wno-ununsed-variable"
 
 endif
