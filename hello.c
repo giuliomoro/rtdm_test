@@ -1,4 +1,6 @@
 #include <asm/uaccess.h>
+#include <linux/dma-mapping.h>
+#include <linux/platform_device.h>
 #include <linux/interrupt.h>
 #include <linux/slab.h>
 #include <linux/kernel.h>
@@ -18,6 +20,9 @@ struct hello_dev {
 	size_t size;
 	void* gpio1_addr;
 	int irq_n;
+	struct platform_device* pdev;
+	void* dma_buffer_k;
+	dma_addr_t dma_handle;
 };
 
 // global pointer to main device structure, inited in hello_init
@@ -37,13 +42,18 @@ static int hello_open(struct inode *inode, struct file *filp){
 	// the reference to the global struct is then stored in the file descriptor struct for easy access later
 	filp->private_data = dev;
 
-	printk(KERN_ALERT "hello_open!\n");
+	dev->dma_buffer_k = dma_alloc_coherent(NULL, 4096, &dev->dma_handle, GFP_KERNEL);
+
+	printk(KERN_ALERT "hello_open! %p %p\n", dev->dma_buffer_k, (void*)dev->dma_handle);
 	return 0;
 }
 
 // function called when the device is closed
 static int hello_release(struct inode *inode, struct file *filp){
+	struct hello_dev *dev;
+	dev = container_of(inode->i_cdev, struct hello_dev, cdev);
 
+	dma_free_coherent(NULL, 4096, dev->dma_buffer_k, dev->dma_handle);
 	printk(KERN_ALERT "hello_release!\n");
 	return 0;
 }
@@ -95,6 +105,30 @@ irqreturn_t gpio1_irq_handler(int irq, void* dev_id){
 	return IRQ_HANDLED;
 }
 
+
+static struct platform_device hello_plat_device = {
+	.name = "hello",
+};
+
+int hello_probe(struct platform_device* pdev){
+	printk(KERN_ALERT "probe\n");
+	return 0;
+}
+
+int hello_remove(struct platform_device* pdev){
+	printk(KERN_ALERT "remove\n");
+	return 0;
+}
+
+static struct platform_driver hello_plat_driver = {
+	.driver		= {
+		.name	= "hello",
+		.owner	= THIS_MODULE,
+	},
+	.probe		= hello_probe,
+	.remove		= hello_remove,
+};
+
 // function pointer struct
 struct file_operations hello_fops = {
 	.owner		= THIS_MODULE,
@@ -120,6 +154,9 @@ static int hello_init(void){
 	struct irq_domain *intc_domain = irq_find_matching_fwnode(&of_node->fwnode, DOMAIN_BUS_ANY); 
 
 	printk(KERN_ALERT "Hello world\n");
+
+	platform_device_register(&hello_plat_device);
+	platform_driver_register(&hello_plat_driver);
 
 	// allocate a major number for our device, store the number in devno
 	res = alloc_chrdev_region(&devno, 0, 1, "hello");
@@ -149,16 +186,16 @@ static int hello_init(void){
 	iounmap(cm_per_addr);
 
 	// map hwirq 98 (gpio1 interrupt from trm) to a software irq and store it in device struct
-	hello_device->irq_n = irq_create_mapping(intc_domain, 98);
-	res = request_irq(hello_device->irq_n, gpio1_irq_handler, IRQF_SHARED, "hello_irq", (void*)hello_device);
-	if (res != 0)
-		printk(KERN_ALERT "irq not registered: %i\n", res);
+//	hello_device->irq_n = irq_create_mapping(intc_domain, 98);
+//	res = request_irq(hello_device->irq_n, gpio1_irq_handler, IRQF_SHARED, "hello_irq", (void*)hello_device);
+//	if (res != 0)
+//		printk(KERN_ALERT "irq not registered: %i\n", res);
 
 	// activate falling-edge interrupts on gpio1_28
-	hello_device->gpio1_addr = ioremap(0x4804c000, 0xfff);
-	printk(KERN_ALERT "gpio1 rev: %08x\n", ioread32(hello_device->gpio1_addr));
-	iowrite32(0x10000000, hello_device->gpio1_addr+0x34);
-	iowrite32(0x10000000, hello_device->gpio1_addr+0x14c);
+//	hello_device->gpio1_addr = ioremap(0x4804c000, 0xfff);
+//	printk(KERN_ALERT "gpio1 rev: %08x\n", ioread32(hello_device->gpio1_addr));
+//	iowrite32(0x10000000, hello_device->gpio1_addr+0x34);
+//	iowrite32(0x10000000, hello_device->gpio1_addr+0x14c);
 
 	// initialise the underlying character device, storing its address in the global dev struct
 	cdev_init(&hello_device->cdev, &hello_fops);
@@ -173,11 +210,13 @@ static int hello_init(void){
 static void hello_exit(void){
 	dev_t devno = MKDEV(major, minor);
 	cdev_del(&hello_device->cdev);
-	free_irq(hello_device->irq_n, hello_device);
-	iounmap(hello_device->gpio1_addr);
+//	free_irq(hello_device->irq_n, hello_device);
+//	iounmap(hello_device->gpio1_addr);
 	kfree(hello_device->buf);
 	kfree(hello_device);
 	unregister_chrdev_region(devno, 1);
+	platform_driver_unregister(&hello_plat_driver);
+	platform_device_del(&hello_plat_device);
 	printk(KERN_ALERT "Goodbye world\n");
 }
 

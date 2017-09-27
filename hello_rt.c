@@ -14,6 +14,8 @@ MODULE_LICENSE("GPL");
 #define EDMA_EERH 0x1024
 #define EDMA_EESRH 0x1034
 #define EDMA_IESR 0x1060
+#define EDMA_IPR 0x1068
+#define EDMA_ICR 0x1070
 
 #define PARAM_BASE EDMA_BASE+0x4000
 #define PARAM_SIZE 0x1f
@@ -71,6 +73,22 @@ struct hello_rt_context {
 	void *dma_buffer_k;
 	dma_addr_t dma_handle;
 };
+
+static int irq_handler_dma(rtdm_irq_t * irq_handle){
+	struct hello_rt_context *ctx = ((struct hello_rt_context*)irq_handle->cookie);
+	unsigned int irq_status;
+
+	rtdm_printk("dma interrupt recieved\n");
+	irq_status = ioread32(ctx->edma_addr + EDMA_IPR);
+	if (irq_status == 0x7){
+		iowrite32(irq_status, ctx->edma_addr + EDMA_ICR);
+		rtdm_printk("handled\n");
+		return RTDM_IRQ_HANDLED;
+	}
+
+	return RTDM_IRQ_NONE;
+
+}
 
 static int irq_handler(rtdm_irq_t *irq_handle){
 	unsigned int irq_status;
@@ -164,12 +182,12 @@ void init_intc(struct hello_rt_context *ctx){
 	int res;
 	struct device_node *of_node = of_find_node_by_name(NULL, "interrupt-controller");
 	struct irq_domain *intc_domain = irq_find_matching_fwnode(&of_node->fwnode, DOMAIN_BUS_ANY); 
-	ctx->linux_irq = irq_create_mapping(intc_domain, 16);
+	ctx->linux_irq = irq_find_mapping(intc_domain, 12);
 	if (!ctx->linux_irq){
 		printk(KERN_ALERT "bad linux irq\n");
 		return;
 	}
-	res = rtdm_irq_request(&ctx->irq_n, ctx->linux_irq, irq_handler, 0, "hello_rt_irq", (void*)ctx);
+//	res = rtdm_irq_request(&ctx->irq_n, ctx->linux_irq, irq_handler_dma, 0, "hello_rt_dma_irq", (void*)ctx);
 	printk("rtdm interrupt %i registered: %i\n", ctx->linux_irq, res);
 	of_node_put(of_node);
 }
