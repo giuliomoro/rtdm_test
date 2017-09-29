@@ -5,16 +5,25 @@
 #include <sys/mman.h>
 #include <error.h>
 #include <string.h>
-
-#include <pthread.h>
 #include <rtdm/rtdm.h>
-//#include "gpio-irq.h"
- #include <time.h>
+#include <time.h>
+
+#ifdef XENOMAI_SKIN_posix
+#include <pthread.h>
+pthread_t demo_task;
+#endif
+
+#ifdef XENOMAI_SKIN_native
+#include <rtdk.h>
+#include <native/task.h>
+RT_TASK demo_task;
+#endif
+
+char demo_task_name[] = "real-time-task";
 
 
 #define VERBOSE
 
-pthread_t demo_task;
 int fd;
 int pin = 69;
 int timingpin = 0;
@@ -79,11 +88,16 @@ void* demo(void *arg) {
 	{
 		int dest;
 		//rt_printf("Reading from userspace\n");
+		gpio[GPIO_CLEARDATAOUT] = pinMask;
 		read(fd, &dest, sizeof(dest));
 		gpio[GPIO_SETDATAOUT] = pinMask;
 		//rt_printf("Successfully read from userspace\n");
-		gpio[GPIO_CLEARDATAOUT] = pinMask;
-       		//__wrap_nanosleep(&req, NULL);
+#ifdef XENOMAI_SKIN_native
+		//rt_task_sleep(req.tv_nsec);
+#endif
+#ifdef XENOMAI_SKIN_posix
+       		nanosleep(&req, NULL);
+#endif
 	}
 	return NULL;
 }
@@ -164,13 +178,27 @@ int main(int argc, char* argv[])
     }
     printf("Returned fd: %d\n", fd);
 
+#ifdef XENOMAI_SKIN_posix
     pthread_create(&demo_task, NULL, demo, NULL);
-    pthread_setname_np(demo_task, "real-time-task");
+    pthread_setname_np(demo_task, demo_task_name);
 
-    void* ret;
-    pthread_join(demo_task, &ret);
-    int iret = (int)ret;
+    void* taskReturn;
+    pthread_join(demo_task, &taskReturn);
+    int iret = (int)taskReturn;
     printf("Returned: %d\n", iret);
+#endif
+#ifdef XENOMAI_SKIN_native
+	int ret;
+	if(ret = rt_task_create(&demo_task, demo_task_name, 16384 * 8, 90, T_JOINABLE | T_FPU))
+	{
+		fprintf(stderr, "Impossible to create task: %d %s\n", -ret, strerror(-ret));
+	}
+	if(ret = rt_task_start(&demo_task, &demo, 0))
+	{
+		fprintf(stderr, "Impossible to start task: %d %s\n", -ret, strerror(-ret));
+	}
+	rt_task_join(&demo_task);
+#endif
 
     close(fd);
     return 0;

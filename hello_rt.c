@@ -98,6 +98,7 @@ static void hello_rt_close(struct rtdm_fd *fd){
 	rtdm_irq_free(&ctx->irq_n);
 	irq_dispose_mapping(ctx->linux_irq);
 	rtdm_free(ctx->buf);
+	rtdm_event_pulse(&ctx->event);
 	rtdm_event_destroy(&ctx->event);
 	rtdm_printk("BYE\n");
 }
