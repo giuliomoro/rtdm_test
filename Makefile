@@ -22,10 +22,10 @@ all: hello_rt.ko gpio-irq-test
 hello_rt.ko: hello_rt.c
 
 test: gpio-irq-test
-gpio-irq-test: gpio-irq-test.c
+gpio-irq-test: gpio-irq-test.c pru_irq_test_bin.h
 	echo 22 > /sys/class/gpio/export || true
 	echo out > /sys/class/gpio/gpio22/direction || true
-	$(CC) -o $@ $< $(STD_CFLAGS) $(STD_LDFLAGS)
+	$(CC) -o $@ $< $(STD_CFLAGS) $(STD_LDFLAGS) -I/root/Bela/include
 
 install:
 	$(MAKE) -C $(KDIR) SUBDIRS=$(PWD) modules_install
@@ -40,3 +40,7 @@ run: all
 	insmod ./hello_rt.ko
 test: run
 	./gpio-irq-test
+
+pru_irq_test_bin.h: pru_irq_test.p
+	pasm -V2 pru_irq_test.p > /dev/null
+
