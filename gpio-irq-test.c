@@ -10,9 +10,12 @@
 #include <inttypes.h>
 #include "pru_irq_test_bin.h"
 
-#include <prussdrv.h>
+#define USE_PRUSSDRV
+//#define USE_MEMMAP_PRU
 
-#define USE_MEMMAP_PRU
+#ifdef USE_PRUSSDRV
+#include <prussdrv.h>
+#endif
 
 #ifdef XENOMAI_SKIN_posix
 #include <pthread.h>
@@ -93,11 +96,11 @@ void* demo(void *arg) {
 	while(!gShouldStop)
 	{
 		int dest;
-		//rt_printf("Reading from userspace\n");
+		rt_printf("Reading from userspace\n");
 		gpio[GPIO_CLEARDATAOUT] = pinMask;
 		read(fd, &dest, sizeof(dest));
 		gpio[GPIO_SETDATAOUT] = pinMask;
-		//rt_printf("Successfully read from userspace\n");
+		rt_printf("Successfully read from userspace\n");
 #ifdef XENOMAI_SKIN_native
 		//rt_task_sleep(req.tv_nsec);
 #endif
@@ -205,9 +208,10 @@ int main(int argc, char* argv[])
                 fprintf(stderr, "Failed to open PRU driver\n");
                 return 1;
         }
-        if(prussdrv_exec_program(1, "pru_irq_test.bin"))
+        // if(prussdrv_exec_program(1, "pru_irq_test.bin"))
+	if(prussdrv_exec_code(1, PRUcode, sizeof(PRUcode)))
         {
-                fprintf(stderr, "Error while executing program\n");
+                fprintf(stderr, "Error while loading PRU program\n");
                 return -1;
         }
 #endif
@@ -241,6 +245,7 @@ int main(int argc, char* argv[])
 	value = 2;
 	memcpy(virt_addr + ctrl_register_offset, &value, sizeof(value));
 #endif
+	exit(1);
 	
 
     if(init_timing_gpio())

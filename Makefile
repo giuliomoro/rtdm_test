@@ -25,7 +25,7 @@ test: gpio-irq-test
 gpio-irq-test: gpio-irq-test.c pru_irq_test_bin.h
 	echo 22 > /sys/class/gpio/export || true
 	echo out > /sys/class/gpio/gpio22/direction || true
-	$(CC) -o $@ $< $(STD_CFLAGS) $(STD_LDFLAGS) -I/root/Bela/include
+	$(CC) -o $@ $< $(STD_CFLAGS) $(STD_LDFLAGS) -I/root/Bela/include /root/Bela/lib/libprussdrv.a
 
 install:
 	$(MAKE) -C $(KDIR) SUBDIRS=$(PWD) modules_install

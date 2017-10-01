@@ -13,7 +13,6 @@ MODULE_LICENSE("GPL");
 #ifdef PRU_IRQ
 // ARM interrupt number for PRU event EVTOUT2
 // this is Host 4 in the PRU intc, which maps to EVTOUT2
-//#define irq_number 22
 #define irq_number 22
 
 #define PRU_SYSTEM_EVENT 20
@@ -80,19 +79,19 @@ static int irq_handler(rtdm_irq_t *irq_handle){
 	// check the pending enabled status (is it enabled AND has it been triggered?)
 	status = ioread32(ctx->pruintc_io + PRU_INTC_SECR1_REG) & (1 << PRU_SYSTEM_EVENT);
 	if(status)
-		rtdm_event_pulse(&ctx->event);
+		rtdm_event_signal(&ctx->event);
 
 	//rtdm_printk(KERN_WARNING "Received interrupt, status: %d\n", status);
 	// clear the event
 	iowrite32((1 << PRU_SYSTEM_EVENT), ctx->pruintc_io + PRU_INTC_SECR1_REG);
 #endif
-	//rtdm_printk("irq %i: %08x\n", *((int*)irq_handle), irq_status);
 
-	// clear interrupt bit in gpio registers to prevent irq refiring
 #ifdef GPIO_IRQ
-	rtdm_event_pulse(&ctx->event);
+	// clear interrupt bit in gpio registers to prevent irq refiring
+	rtdm_event_signal(&ctx->event);
 	irq_status = ioread32(ctx->gpio1_addr + 0x2c);
 	iowrite32(irq_status, ctx->gpio1_addr + 0x2c);
+	//rtdm_printk("irq %i: %08x\n", *((int*)irq_handle), irq_status);
 #endif
 	return RTDM_IRQ_HANDLED;
 }
@@ -122,8 +121,10 @@ void init_gpio(struct hello_rt_context *ctx){
 void init_pru(struct hello_rt_context *ctx){
 	unsigned int value;
 	ctx->pruintc_io = ioremap(AM33XX_INTC_PHYS_BASE, PRU_INTC_SIZE);
+	// Set polarity of system events
 	iowrite32(0xFFFFFFFF, ctx->pruintc_io + PRU_INTC_SIPR1_REG);
 	iowrite32(0xFFFFFFFF,  ctx->pruintc_io + PRU_INTC_SIPR2_REG);
+	// Set type of system events
 	iowrite32(0x0, ctx->pruintc_io + PRU_INTC_SITR1_REG);
 	iowrite32(0x0, ctx->pruintc_io + PRU_INTC_SITR2_REG);
 
@@ -137,6 +138,7 @@ void init_pru(struct hello_rt_context *ctx){
 	iowrite32(PRU_INTC_CHANNEL, ctx->pruintc_io + PRU_INTC_CMR5_REG);
 
 	// map PRU channel interrupt to host 
+	// TODO: possible conflict
 	iowrite32(PRU_INTC_HOST, ctx->pruintc_io + PRU_INTC_HMR1_REG); //TODO: write only 8 bits
 
 	//clear system events
@@ -150,9 +152,8 @@ void init_pru(struct hello_rt_context *ctx){
 
 	// 4.4.3.2.1 INTC methodology > Interrupt Processing > Interrupt Enabling
 	iowrite32(PRU_SYSTEM_EVENT, ctx->pruintc_io + PRU_INTC_EISR_REG);
-	value = ioread32(ctx->pruintc_io + PRU_INTC_EISR_REG);
-	// printk(KERN_WARNING "PRU_INTC_EISR_REG: %#x\n", value);
 
+	// enable host interrupt output
 	iowrite32(PRU_INTC_CHANNEL, ctx->pruintc_io + PRU_INTC_HIEISR_REG);
 
 	// not written in the manual
@@ -231,6 +232,8 @@ static ssize_t hello_rt_read(struct rtdm_fd *fd, void __user *buf, size_t size){
 	struct hello_rt_context *ctx = rtdm_fd_to_private(fd);
 
 	//rtdm_printk(KERN_WARNING "hello_rt_read got called and waits\n");
+	// wait till event gets signalled.
+	// if the event has been signalled already, will return immediately
 	rtdm_event_wait(&ctx->event);
 	//rtdm_printk(KERN_WARNING "hello_rt_read got released\n");
 	//ret = rtdm_copy_to_user(fd, buf, &value, sizeof(value));
