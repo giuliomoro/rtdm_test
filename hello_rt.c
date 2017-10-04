@@ -169,10 +169,10 @@ void init_pru(struct hello_rt_context *ctx){
 void init_intc(struct hello_rt_context *ctx){
 	struct device_node *of_node = of_find_node_by_name(NULL, "interrupt-controller");
 	struct irq_domain *intc_domain = irq_find_matching_fwnode(&of_node->fwnode, DOMAIN_BUS_ANY); 
-	unsigned int irq = irq_create_mapping(intc_domain, irq_number);
+	ctx->linux_irq = irq_create_mapping(intc_domain, irq_number);
 	printk(KERN_WARNING "init_intc\n");
-	int res = rtdm_irq_request(&ctx->irq_n, irq, irq_handler, 0, "hello_rt_irq", (void*)ctx);
-	printk(KERN_ALERT "rtdm irq: %i\n", irq);
+	int res = rtdm_irq_request(&ctx->irq_n, ctx->linux_irq, irq_handler, 0, "hello_rt_irq", (void*)ctx);
+	printk(KERN_ALERT "rtdm irq: %i\n", ctx->linux_irq);
 	if(res != 0)
 		printk(KERN_ALERT "rtdm interrupt registered: %i FAILED\n", res);
 }
@@ -204,7 +204,7 @@ static void hello_rt_close(struct rtdm_fd *fd){
 	iowrite32(0, ctx->pruintc_io + PRU_INTC_GER_REG);
 #endif
 	rtdm_irq_free(&ctx->irq_n);
-	irq_dispose_mapping(ctx->linux_irq);
+	//irq_dispose_mapping(ctx->linux_irq); // this triggers a stack trace in dmesg
 	rtdm_free(ctx->buf);
 	rtdm_event_pulse(&ctx->event);
 	rtdm_event_destroy(&ctx->event);
