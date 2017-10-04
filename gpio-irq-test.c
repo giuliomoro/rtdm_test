@@ -245,7 +245,6 @@ int main(int argc, char* argv[])
 	value = 2;
 	memcpy(virt_addr + ctrl_register_offset, &value, sizeof(value));
 #endif
-	exit(1);
 	
 
     if(init_timing_gpio())
